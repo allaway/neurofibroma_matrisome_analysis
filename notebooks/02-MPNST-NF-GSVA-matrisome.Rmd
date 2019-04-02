@@ -1,0 +1,82 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+
+```{r}
+library(tidyverse)
+library(synapser)
+library(GSVA)
+library(GSEABase)
+
+synLogin()
+
+exp <- read_tsv(synGet('syn18485747')$path)
+metadata <- read_tsv(synGet('syn18485748')$path)
+
+```
+
+```{r}
+tumor_metadata <- filter(metadata, grepl("Tumor.+", source_name_ch1))
+
+tumor_metadata <- mutate(tumor_metadata, type = 
+                           case_when(source_name_ch1 == "Tumor: dermal neurofibroma" ~ 'NF',
+                                     source_name_ch1 == "Tumor: plexiform neurofibroma" ~ 'NF',
+                                     source_name_ch1 == "Tumor: MPNST" ~ "MPNST"))
+
+exp_tumor <- exp[colnames(exp) %in% tumor_metadata$refinebio_accession_code]
+
+exp_tumor %<>% as.data.frame() %>% select(tumor_metadata$refinebio_accession_code) %>% as.matrix()
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+matrisome.gmt <- getGmt("matrisome.gmt")
+
+gsva_expression <- exp_tumor %>% 
+  as.data.frame() %>% 
+  rownames_to_column("ensembl_id") %>% 
+  left_join(mapped_df) %>% 
+  filter(!is.na(gene_symbol)) %>% 
+  dplyr::select(-ensembl_id) %>% 
+  group_by(gene_symbol) %>% 
+  summarize_all(mean) %>%
+  ungroup() %>% 
+  column_to_rownames("gene_symbol") %>% 
+  as.matrix()
+ 
+res.gsva <-GSVA::gsva(gsva_expression,matrisome.gmt, method = "gsva")
+
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width=8}
+
+meta <- tumor_metadata %>% dplyr::select(type)
+rownames(meta) <- tumor_metadata$refinebio_accession_code
+
+pheatmap(as.data.frame(res.gsva), annotation_col = meta, cluster_rows = F, cellwidth = 20, cellheight = 20, fontsize_col = 10, fontsize_row = 10, border_color = NA)
+
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE, fig.width=8}
+library(pheatmap)
+svg("matrisome_pathway_heatmap.svg", width = 8, height = 8)
+pheatmap(res.gsva, cluster_rows = F, cellwidth = 5, cellheight = 5, 
+         fontsize_col = 6, fontsize_row = 5, border_color = NA)
+dev.off()
+```
+
+
+```{r}
+sessionInfo()
+```
+

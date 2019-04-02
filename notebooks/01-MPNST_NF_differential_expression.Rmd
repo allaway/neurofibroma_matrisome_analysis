@@ -1,0 +1,101 @@
+---
+title: "differential expression of neurofibroma (NF) vs malignant peripheral nerve sheath tumor (MPNST)"
+output: html_notebook
+---
+
+## Import packages and get data
+
+The data used here is a subset of GSE14038, which contains expression data from cutaneous neurofibromas, plexiform neurofibromas, and MPNSTs, both tumors and cell lines. Here, we're only going to look at the tumors. The data were downloaded from refine.bio (no normalization) on March 31, 2019. 
+
+First, we download the data and use PCA to take a glance at the data. 
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(synapser)
+library(limma)
+library(org.Hs.eg.db)
+install.packages('DT')
+
+set.seed(12345678)
+
+synLogin()
+
+exp <- read_tsv(synGet('syn18485747')$path) %>% column_to_rownames("X1")
+metadata <- read_tsv(synGet('syn18485748')$path) 
+
+pca <- prcomp(t(exp))
+
+pca_data <- pca$x %>% 
+  as.data.frame() %>% 
+  rownames_to_column("refinebio_accession_code") %>% 
+  left_join(metadata)
+
+```
+
+
+## PCA
+
+The groups seem to be driven by the type of tumor, which is good news. This data should be pretty much ready to go. We'll focus only the samples that start with "tumor:".
+
+```{r}
+ggplot(data = pca_data) +
+  geom_point(aes(x=PC1, y=PC2, color = source_name_ch1))
+```
+
+##Subset the data. 
+
+#Here, I am filtering the data for the tumor samples only, and adding a Type column, where we are defining both types of neurofibromas (dermal/cutaneous and plexiform) as NF and the MPNSTs as MPNST.
+
+```{r}
+tumor_metadata <- filter(metadata, grepl("Tumor.+", source_name_ch1))
+
+tumor_metadata <- mutate(tumor_metadata, type = 
+                           case_when(source_name_ch1 == "Tumor: dermal neurofibroma" ~ 'NF',
+                                     source_name_ch1 == "Tumor: plexiform neurofibroma" ~ 'NF',
+                                     source_name_ch1 == "Tumor: MPNST" ~ "MPNST"))
+
+exp_tumor <- exp[colnames(exp) %in% tumor_metadata$refinebio_accession_code]
+
+exp_tumor %<>% as.data.frame() %>% dplyr::select(tumor_metadata$refinebio_accession_code) %>% as.matrix()
+```
+
+#Then, as per the standard limma protocol for single channel microarrays, we create a model matrix to compare NF to MPNST samples, fit a linear model to the data, and then the the model matrix + contrasts to get a table of differentially expressed genes.
+
+```{r}
+f <- factor(tumor_metadata$type, levels = c("NF", "MPNST"))
+design <- model.matrix(~0+f)
+colnames(design) <- c("NF","MPNST")
+
+fit <- lmFit(exp_tumor, design)
+
+contrast.matrix <- makeContrasts(MPNST-NF, levels=design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+res <- topTable(fit2, coef=1, adjust="BH", n = Inf) %>% rownames_to_column("ensembl_id")
+```
+
+##Convert to gene symbols
+
+Gene symbols are more useful for some downstream analyses, so we'll create a mapping list here. It's important to note that a small set of ensembl ids have a one to many mapping, so some genes will be duplicated by this mapping. Conversely, not all ensembl ids will have a gene symbol assigned with this map. If there is a particularly important gene symbol found, please check the corresponding ensembl id in the table to verify that there is no ambiguity. 
+
+```{r}
+mapped_list <- mapIds(org.Hs.eg.db, keys = res$ensembl_id, column = "SYMBOL", 
+                      keytype = "ENSEMBL", multiVals = "list")
+
+mapped_df <- reshape2::melt(mapped_list)
+
+colnames(mapped_df) <- c("gene_symbol","ensembl_id")
+
+res <- left_join(res,mapped_df) %>% dplyr::select(ensembl_id, gene_symbol, logFC, AveExpr, t, P.Value)
+
+library(DT)
+DT::datatable(res)
+```
+
+## 
+
+## Session Info 
+```{r}
+sessionInfo()
+```
+
